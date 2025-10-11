@@ -1,0 +1,92 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry-service
+  namespace: cloudplay
+  labels:
+    app: registry-service
+    app.kubernetes.io/part-of: cloudplay
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: registry-service
+  template:
+    metadata:
+      labels:
+        app: registry-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/actuator/prometheus"
+        prometheus.io/port: "8083"
+    spec:
+      containers:
+        - name: registry-service
+          image: ghcr.io/cloudplay/registry-service:1.0.0
+          ports:
+            - containerPort: 8083
+              name: http
+          envFrom:
+            - configMapRef:
+                name: cloudplay-config
+          env:
+            - name: SPRING_PROFILES_ACTIVE
+              valueFrom:
+                configMapKeyRef:
+                  name: cloudplay-config
+                  key: SPRING_PROFILES_ACTIVE
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "384Mi"
+            limits:
+              cpu: "1"
+              memory: "768Mi"
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8083
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8083
+            initialDelaySeconds: 30
+            periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: registry-service
+  namespace: cloudplay
+  labels:
+    app: registry-service
+spec:
+  selector:
+    app: registry-service
+  ports:
+    - name: http
+      port: 8083
+      targetPort: 8083
+  type: ClusterIP
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: registry-service-hpa
+  namespace: cloudplay
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: registry-service
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

@@ -1,0 +1,91 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: session-orchestrator
+  namespace: cloudplay
+  labels:
+    app: session-orchestrator
+    app.kubernetes.io/part-of: cloudplay
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: session-orchestrator
+  template:
+    metadata:
+      labels:
+        app: session-orchestrator
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/actuator/prometheus"
+        prometheus.io/port: "8082"
+    spec:
+      containers:
+        - name: session-orchestrator
+          image: ghcr.io/cloudplay/session-orchestrator:1.0.0
+          ports:
+            - containerPort: 8082
+              name: http
+          envFrom:
+            - configMapRef:
+                name: cloudplay-config
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8082
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8082
+            initialDelaySeconds: 40
+            periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: session-orchestrator
+  namespace: cloudplay
+  labels:
+    app: session-orchestrator
+spec:
+  selector:
+    app: session-orchestrator
+  ports:
+    - name: http
+      port: 8082
+      targetPort: 8082
+  type: ClusterIP
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: session-orchestrator-hpa
+  namespace: cloudplay
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: session-orchestrator
+  minReplicas: 2
+  maxReplicas: 10
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 120
+    scaleUp:
+      stabilizationWindowSeconds: 0
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 65

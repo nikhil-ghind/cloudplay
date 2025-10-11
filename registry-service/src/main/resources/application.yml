@@ -1,0 +1,47 @@
+server:
+  port: 8083
+  shutdown: graceful
+
+spring:
+  application:
+    name: registry-service
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+  data:
+    redis:
+      host: ${REDIS_HOST:redis}
+      port: ${REDIS_PORT:6379}
+      timeout: 2s
+
+cloudplay:
+  registry:
+    lease-ttl: 30s
+    heartbeat-interval: 10s
+    reaper-interval: 5s
+    reaper-interval-millis: 5000
+    decommission-grace: 2m
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: always
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+logging:
+  level:
+    com.cloudplay: INFO
+
+---
+# Distributed mode: shared registry state in Redis across replicas.
+spring:
+  config:
+    activate:
+      on-profile: redis

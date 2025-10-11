@@ -1,0 +1,17 @@
+# Copy to terraform.tfvars and adjust. terraform.tfvars is gitignored.
+region          = "us-east-1"
+cluster_name    = "cloudplay"
+cluster_version = "1.29"
+
+system_instance_type = "m6i.xlarge"
+system_desired_size  = 3
+
+gpu_instance_type = "g5.xlarge"
+gpu_min_size      = 1
+gpu_max_size      = 50
+gpu_desired_size  = 2
+
+tags = {
+  Environment = "dev"
+  Owner       = "platform-team"
+}

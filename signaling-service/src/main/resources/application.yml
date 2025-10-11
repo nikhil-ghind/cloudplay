@@ -1,0 +1,32 @@
+server:
+  port: 8081
+  shutdown: graceful
+
+spring:
+  application:
+    name: signaling-service
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+
+cloudplay:
+  signaling:
+    # Comma-separated origin patterns allowed to open the signaling WebSocket.
+    allowed-origins: ${SIGNALING_ALLOWED_ORIGINS:*}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: always
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+logging:
+  level:
+    com.cloudplay: INFO

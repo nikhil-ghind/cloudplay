@@ -1,0 +1,39 @@
+server:
+  port: 8080
+  shutdown: graceful
+
+spring:
+  application:
+    name: gateway-service
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+
+cloudplay:
+  gateway:
+    orchestrator-url: ${ORCHESTRATOR_URL:http://session-orchestrator:8082}
+    signaling-url: ${SIGNALING_URL:wss://signaling.cloudplay.example.com}
+    auth:
+      enabled: ${AUTH_ENABLED:true}
+      # Provide keys via env (comma-separated) in real deployments; never commit.
+      api-keys: ${API_KEYS:dev-key-local}
+      open-paths:
+        - /actuator/**
+        - /api/v1/public/**
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: always
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+logging:
+  level:
+    com.cloudplay: INFO
