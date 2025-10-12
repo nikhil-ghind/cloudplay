@@ -33,56 +33,38 @@ on Linux.
 
 ## Architecture
 
-```
-                                  ┌──────────────────────────┐
-        players (browsers)        │      gateway-service      │
-        game launchers            │   (WebFlux edge, :8080)   │
-              │                   │  - X-API-Key auth filter  │
-              │  REST/HTTPS       │  - routes to orchestrator │
-              └──────────────────▶│  - single public API      │
-                                  └────────────┬─────────────┘
-                                               │ REST (WebClient)
-                                               ▼
-                                  ┌──────────────────────────┐
-                                  │   session-orchestrator    │
-                                  │      (MVC, :8082)         │
-                                  │  - allocation algorithm   │
-                                  │  - session lifecycle      │
-                                  │  - autoscaler loop ───────┼──▶ scale intent
-                                  └─────┬───────────────┬─────┘     (metrics)
-                            reserve/    │               │ candidate nodes
-                            release     │               │
-                            (atomic)    ▼               ▼
-                                  ┌──────────────────────────┐
-                                  │     registry-service      │
-                                  │      (MVC, :8083)         │
-                                  │  - node/session registry  │
-                                  │  - heartbeat leases       │
-                                  │  - atomic slot CAS        │
-                                  │  - lease reaper           │
-                                  └────────────┬─────────────┘
-                                               │ RegistryStore (pluggable)
-                                          ┌────┴─────┐
-                                   in-memory       Redis (Lua CAS)
-                                   (default)       (redis profile, shared state)
+```mermaid
+flowchart TB
+    PLAYERS["Players — browsers, game launchers"]
 
-        ┌────────────────────────────────────────────────────────────┐
-        │                       GPU node pool                          │
-        │  ┌───────────────┐   register + heartbeat   ┌─────────────┐ │
-        │  │  game streamer│ ───────────────────────▶ │  registry   │ │
-        │  │  (WebRTC peer)│                           └─────────────┘ │
-        │  └──────┬────────┘                                           │
-        └─────────┼──────────────────────────────────────────────────┘
-                  │ WebRTC media (SRTP/DTLS, P2P after signaling)
-                  │
-                  │       SDP / ICE over WebSocket
-                  ▼
-        ┌──────────────────────────┐        ┌──────────────────────────┐
-        │     signaling-service     │◀──────▶│        player peer        │
-        │   (WebSocket, :8081)      │  SDP/  │     (browser, WebRTC)     │
-        │  - per-session peer map   │  ICE   └──────────────────────────┘
-        │  - pure relay (no media)  │
-        └──────────────────────────┘
+    subgraph cp["Control plane"]
+        GW["gateway-service :8080<br/>Spring WebFlux<br/>X-API-Key AuthFilter, OrchestratorClient"]
+        ORCH["session-orchestrator :8082<br/>SessionAllocationService, NodeScheduler,<br/>SessionRepository, Autoscaler"]
+        REG["registry-service :8083<br/>RegistryService, NodeController,<br/>LeaseReaper"]
+        SIG["signaling-service :8081<br/>SignalingWebSocketHandler,<br/>SignalingSessionRegistry"]
+    end
+
+    subgraph stores["RegistryStore (pluggable)"]
+        MEM[("InMemoryRegistryStore<br/>default profile")]
+        REDIS[("RedisRegistryStore<br/>Lua compare-and-set for slots")]
+    end
+
+    subgraph pool["GPU node pool"]
+        STREAM["game streamer per node<br/>registers, heartbeats, owns the media leg"]
+    end
+
+    PLAYERS -->|"REST over HTTPS"| GW
+    GW -->|"WebClient"| ORCH
+    ORCH -->|"listSchedulableNodes / reserveSlot / releaseSlot<br/>via RegistryClient"| REG
+    REG --> MEM
+    REG --> REDIS
+    STREAM -->|"register + heartbeat"| REG
+    REG -->|"lease expiry reaps the node<br/>and frees its slots"| REG
+    ORCH -->|"scale intent from the autoscaler loop"| SCALE["Scale decision<br/>ScaleDecision, exposed as metrics"]
+
+    PLAYERS <-->|"SDP / ICE over WebSocket"| SIG
+    STREAM <-->|"SDP / ICE over WebSocket"| SIG
+    PLAYERS <-->|"WebRTC media, SRTP over DTLS,<br/>never through the control plane"| STREAM
 ```
 
 The **control plane** (gateway, orchestrator, registry, signaling) handles
@@ -206,36 +188,33 @@ The signaling service is a **stateless relay** keyed by `sessionId`. It pairs th
 two peers — the **player** (browser) and the **streamer** (GPU node process) —
 and forwards their SDP/ICE without inspecting it.
 
-```
- player (browser)            signaling-service              streamer (GPU node)
-        │                            │                              │
-        │  WS connect ?sessionId=X   │                              │
-        ├───────────────────────────▶                              │
-        │  JOIN {role: PLAYER}       │                              │
-        ├───────────────────────────▶                              │
-        │  JOINED {peerPresent:false}│                              │
-        ◀───────────────────────────┤                              │
-        │                            │   WS connect ?sessionId=X    │
-        │                            ◀──────────────────────────────┤
-        │                            │   JOIN {role: STREAMER}      │
-        │                            ◀──────────────────────────────┤
-        │                            │   JOINED {peerPresent:true}  │
-        │                            ├──────────────────────────────▶
-        │   JOINED {peerPresent:true}│  (notifies player too)       │
-        ◀───────────────────────────┤                              │
-        │                            │   OFFER {sdp}                │  ← streamer is offerer
-        │     OFFER {sdp} (relayed)  ◀──────────────────────────────┤
-        ◀───────────────────────────┤                              │
-        │   ANSWER {sdp}             │                              │
-        ├───────────────────────────▶   ANSWER {sdp} (relayed)     │
-        │                            ├──────────────────────────────▶
-        │  ICE_CANDIDATE (trickle)   │   ICE_CANDIDATE (trickle)    │
-        ├──────────────◀─────────────┼──────────────◀───────────────┤
-        │                            │                              │
-        │ ═══════════ WebRTC media (SRTP) flows peer-to-peer ═══════│
-        │            (does NOT pass through signaling)              │
-        │   CONNECTED                │   CONNECTED                  │
-        │            LEAVE / close → counterpart notified           │
+```mermaid
+sequenceDiagram
+    participant P as player (browser)
+    participant S as signaling-service
+    participant G as streamer (GPU node)
+
+    P->>S: WebSocket connect ?sessionId=X
+    P->>S: JOIN role PLAYER
+    S-->>P: JOINED peerPresent=false
+    G->>S: WebSocket connect ?sessionId=X
+    G->>S: JOIN role STREAMER
+    S-->>G: JOINED peerPresent=true
+    S-->>P: JOINED peerPresent=true
+    G->>S: OFFER sdp
+    S-->>P: OFFER sdp (relayed verbatim)
+    P->>S: ANSWER sdp
+    S-->>G: ANSWER sdp (relayed verbatim)
+    loop trickle ICE
+        P->>S: ICE_CANDIDATE
+        S-->>G: ICE_CANDIDATE
+        G->>S: ICE_CANDIDATE
+        S-->>P: ICE_CANDIDATE
+    end
+    P-->>G: WebRTC media over SRTP, peer to peer
+    P->>S: CONNECTED
+    G->>S: CONNECTED
+    Note over P,G: on close or LEAVE the counterpart is notified
 ```
 
 Message types (`SignalType`): `JOIN`, `JOINED`, `OFFER`, `ANSWER`,
@@ -269,6 +248,20 @@ Implemented in `NodeScheduler` + `SessionAllocationService`:
 
 Session states: `PENDING → ALLOCATING → ACTIVE → TERMINATING → TERMINATED`
 (with `FAILED` as the error terminal).
+
+```mermaid
+stateDiagram-v2
+    [*] --> PENDING: allocate() saves the session
+    PENDING --> ALLOCATING: a ranked candidate is picked
+    ALLOCATING --> ALLOCATING: slot conflict or node gone, try the next candidate
+    ALLOCATING --> ACTIVE: registry reserved a slot
+    ALLOCATING --> FAILED: no candidates, or attempts exhausted
+    PENDING --> FAILED: no schedulable node in region and gpuClass
+    ACTIVE --> TERMINATING: DELETE /sessions/{id}
+    TERMINATING --> TERMINATED: slot released back to the registry
+    TERMINATED --> [*]
+    FAILED --> [*]
+```
 
 ---
 
